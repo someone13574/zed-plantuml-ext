@@ -17,9 +17,6 @@ jobs:
           - goos: darwin
             goarch: arm64
             asset: plantuml-lsp-macos-arm64.tar.gz
-          - goos: darwin
-            goarch: amd64
-            asset: plantuml-lsp-macos-x64.tar.gz
           - goos: linux
             goarch: arm64
             asset: plantuml-lsp-linux-arm64.tar.gz

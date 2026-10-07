@@ -1,11 +1,16 @@
 use zed_extension_api as zed;
 
+use crate::binary::Binary;
 use crate::lsp::Lsp;
+use crate::plantuml::Plantuml;
 
+mod binary;
 mod lsp;
+mod plantuml;
 
 struct PlantUMLExtension {
     lsp: Lsp,
+    plantuml: Plantuml,
 }
 
 impl zed::Extension for PlantUMLExtension {
@@ -15,6 +20,7 @@ impl zed::Extension for PlantUMLExtension {
     {
         Self {
             lsp: Default::default(),
+            plantuml: Default::default(),
         }
     }
 
@@ -26,7 +32,10 @@ impl zed::Extension for PlantUMLExtension {
         match language_server_id.as_ref() {
             Lsp::ID => Ok(zed::Command {
                 command: self.lsp.get_binary(language_server_id, worktree)?,
-                args: Vec::new(),
+                args: vec![format!(
+                    "--exec-path={}",
+                    self.plantuml.get_binary(language_server_id, worktree)?
+                )],
                 env: Vec::new(),
             }),
             id => Err(format!("unknown language server `{id}`"))?,
