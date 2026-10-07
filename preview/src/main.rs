@@ -12,14 +12,15 @@ use std::{
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentLink, DocumentLinkOptions, DocumentLinkParams, LogMessageParams, MessageType, Position,
-    Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, LogMessageParams, MarkupContent,
+    MarkupKind, MessageType, Position, Range, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind,
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, LogMessage,
         Notification as LspNotification,
     },
-    request::{DocumentLinkRequest, Request as LspRequest},
+    request::{HoverRequest, Request as LspRequest},
 };
 
 mod render;
@@ -34,10 +35,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-        document_link_provider: Some(DocumentLinkOptions {
-            resolve_provider: Some(false),
-            work_done_progress_options: Default::default(),
-        }),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         ..Default::default()
     };
     connection.initialize(serde_json::to_value(capabilities)?)?;
@@ -112,9 +110,7 @@ impl Server {
         let id = request.id;
         let params = request.params;
         let result = match request.method.as_str() {
-            DocumentLinkRequest::METHOD => {
-                parse_params(params).and_then(|params| self.document_links(params))
-            }
+            HoverRequest::METHOD => parse_params(params).and_then(|params| self.hover(params)),
             method => {
                 return Response::new_err(
                     id,
@@ -130,10 +126,15 @@ impl Server {
         }
     }
 
-    fn document_links(&self, params: DocumentLinkParams) -> Result<serde_json::Value, String> {
-        let uri = params.text_document.uri.to_string();
+    fn hover(&self, params: HoverParams) -> Result<serde_json::Value, String> {
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
+        let position = params.text_document_position_params.position;
         let Some(path) = file_path(&uri) else {
-            return Ok(serde_json::json!([]));
+            return Ok(serde_json::Value::Null);
         };
         let text = match self.documents.get(&uri) {
             Some(text) => Cow::Borrowed(text.as_str()),
@@ -143,38 +144,51 @@ impl Server {
                         &self.logger,
                         MessageType::LOG,
                         format!(
-                            "links requested before open, read `{}` from disk",
+                            "hover requested before open, read `{}` from disk",
                             path.display()
                         ),
                     );
                     Cow::Owned(text)
                 }
-                Err(_) => return Ok(serde_json::json!([])),
+                Err(_) => return Ok(serde_json::Value::Null),
             },
         };
 
-        let links: Vec<DocumentLink> = text
+        let Some((idx, (line, content))) = text
             .lines()
             .enumerate()
-            .filter_map(|(line, content)| {
-                let word = content.split_whitespace().next()?;
-                content.starts_with("@start").then_some((line, word.len()))
-            })
+            .filter(|(_, content)| content.starts_with("@start"))
             .enumerate()
-            .filter_map(|(idx, (line, len))| {
-                let target = url::Url::from_file_path(render::svg_path(&path, idx)?).ok()?;
-                Some(DocumentLink {
-                    range: Range {
-                        start: Position::new(line as u32, 0),
-                        end: Position::new(line as u32, len as u32),
-                    },
-                    target: Some(target.as_str().parse().ok()?),
-                    tooltip: Some("Open preview".to_string()),
-                    data: None,
-                })
-            })
-            .collect();
-        serde_json::to_value(links).map_err(|err| err.to_string())
+            .find(|(_, (line, _))| *line == position.line as usize)
+        else {
+            return Ok(serde_json::Value::Null);
+        };
+        let len = content.split_whitespace().next().map_or(0, str::len);
+        if position.character as usize > len {
+            return Ok(serde_json::Value::Null);
+        }
+        let Some(target) =
+            render::png_path(&path, idx).and_then(|png| url::Url::from_file_path(png).ok())
+        else {
+            return Ok(serde_json::Value::Null);
+        };
+
+        log(
+            &self.logger,
+            MessageType::LOG,
+            format!("hover preview link for diagram {idx} of `{uri}`"),
+        );
+        let hover = Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("[Open preview]({target})"),
+            }),
+            range: Some(Range {
+                start: Position::new(line as u32, 0),
+                end: Position::new(line as u32, len as u32),
+            }),
+        };
+        serde_json::to_value(hover).map_err(|err| err.to_string())
     }
 
     fn handle_notification(

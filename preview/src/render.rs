@@ -88,14 +88,14 @@ pub fn run(plantuml: PathBuf, jobs: Receiver<Job>, logger: Sender<Message>) {
     }
 }
 
-pub fn svg_path(source: &Path, idx: usize) -> Option<PathBuf> {
+pub fn png_path(source: &Path, idx: usize) -> Option<PathBuf> {
     let stem = source.file_stem()?.to_string_lossy();
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
 
     let name = match idx {
-        0 => format!("{stem}.svg"),
-        idx => format!("{stem}_{idx:03}.svg"),
+        0 => format!("{stem}.png"),
+        idx => format!("{stem}_{idx:03}.png"),
     };
     Some(
         env::temp_dir()
@@ -116,7 +116,7 @@ fn render(plantuml: &Path, path: &Path, text: String) -> io::Result<Outcome> {
     command
         .args([
             "-pipe",
-            "-tsvg",
+            "-tpng",
             "-charset",
             "UTF-8",
             "-pipedelimitor",
@@ -145,16 +145,25 @@ fn render(plantuml: &Path, path: &Path, text: String) -> io::Result<Outcome> {
         status: output.status,
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let svgs = stdout
-        .split(DELIMITER)
-        .map(str::trim)
-        .filter(|svg| !svg.is_empty());
-    for (idx, svg) in svgs.enumerate() {
-        let svg_path = svg_path(path, idx).ok_or_else(|| io::Error::other("not a file path"))?;
-        let svg = with_background(svg).unwrap_or_else(|| svg.to_string());
-        if write_if_changed(&svg_path, &svg)? {
-            outcome.written.push(svg_path);
+    let mut rest = output.stdout.as_slice();
+    let mut pngs = Vec::new();
+    while let Some(end) = rest
+        .windows(DELIMITER.len())
+        .position(|window| window == DELIMITER.as_bytes())
+    {
+        pngs.push(&rest[..end]);
+        rest = &rest[end + DELIMITER.len()..];
+    }
+    pngs.push(rest);
+
+    let pngs = pngs
+        .into_iter()
+        .map(<[u8]>::trim_ascii)
+        .filter(|png| !png.is_empty());
+    for (idx, png) in pngs.enumerate() {
+        let png_path = png_path(path, idx).ok_or_else(|| io::Error::other("not a file path"))?;
+        if write_if_changed(&png_path, png)? {
+            outcome.written.push(png_path);
         } else {
             outcome.unchanged += 1;
         }
@@ -163,29 +172,8 @@ fn render(plantuml: &Path, path: &Path, text: String) -> io::Result<Outcome> {
     Ok(outcome)
 }
 
-fn with_background(svg: &str) -> Option<String> {
-    const BACKGROUND: &str = "background:";
-
-    let tag_start = svg.find("<svg")?;
-    let tag_end = tag_start + svg[tag_start..].find('>')?;
-    let tag = &svg[tag_start..tag_end];
-    if tag.ends_with('/') {
-        return None;
-    }
-
-    let color_start = tag.find(BACKGROUND)? + BACKGROUND.len();
-    let color_len = tag[color_start..].find([';', '"'])?;
-    let color = tag[color_start..color_start + color_len].trim();
-
-    Some(format!(
-        "{}<rect width=\"100%\" height=\"100%\" fill=\"{color}\"/>{}",
-        &svg[..=tag_end],
-        &svg[tag_end + 1..]
-    ))
-}
-
-fn write_if_changed(path: &Path, contents: &str) -> io::Result<bool> {
-    if fs::read(path).is_ok_and(|existing| existing == contents.as_bytes()) {
+fn write_if_changed(path: &Path, contents: &[u8]) -> io::Result<bool> {
+    if fs::read(path).is_ok_and(|existing| existing == contents) {
         return Ok(false);
     }
 
