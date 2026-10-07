@@ -1,0 +1,3 @@
+name = "PlantUML"
+path_suffixes = ["puml", "plantuml", "pu", "iuml", "wsd"]
+line_comments = ["' "]
