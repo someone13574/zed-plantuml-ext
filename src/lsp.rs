@@ -10,7 +10,7 @@ pub struct Lsp {
 impl Lsp {
     pub const ID: &str = "ptdewey-plantuml-lsp";
     const DOWNLOAD_REPO: &str = "someone13574/zed-plantuml-ext"; // no upstream builds at ptdewey/plantuml-lsp
-    const DOWNLOAD_TAG: &str = "v0.0.1";
+    const DOWNLOAD_TAG: &str = "test";
 
     pub fn get_binary(
         &mut self,

@@ -1,0 +1,62 @@
+name: Build plantuml-lsp
+permissions: write-all
+on:
+  release:
+    types:
+      - published
+
+env:
+  PLANTUML_LSP_REF: v0.5.3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            asset: plantuml-lsp-macos-arm64.tar.gz
+          - goos: darwin
+            goarch: amd64
+            asset: plantuml-lsp-macos-x64.tar.gz
+          - goos: linux
+            goarch: arm64
+            asset: plantuml-lsp-linux-arm64.tar.gz
+          - goos: linux
+            goarch: amd64
+            asset: plantuml-lsp-linux-x64.tar.gz
+          - goos: windows
+            goarch: amd64
+            asset: plantuml-lsp-windows-x64.zip
+    steps:
+      - name: Checkout plantuml-lsp
+        uses: actions/checkout@v7
+        with:
+          repository: ptdewey/plantuml-lsp
+          ref: ${{ env.PLANTUML_LSP_REF }}
+
+      - name: Install Go Toolchain
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run go build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags="-s -w" -o "plantuml-lsp$(go env GOEXE)" .
+
+      - name: Create archive
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "${{ matrix.asset }}" plantuml-lsp.exe
+          else
+            tar -czvf "${{ matrix.asset }}" plantuml-lsp
+          fi
+
+      - name: Add asset to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ matrix.asset }}
