@@ -11,10 +11,10 @@ use crossbeam_channel::{RecvTimeoutError, Sender};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentLink, DocumentLinkOptions, DocumentLinkParams, Position, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind,
+    DocumentLink, DocumentLinkOptions, DocumentLinkParams, LogMessageParams, MessageType, Position,
+    Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
     notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, LogMessage,
         Notification as LspNotification,
     },
     request::{DocumentLinkRequest, Request as LspRequest},
@@ -39,14 +39,21 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         ..Default::default()
     };
     connection.initialize(serde_json::to_value(capabilities)?)?;
+    log(
+        &connection.sender,
+        MessageType::INFO,
+        format!("started with plantuml `{}`", plantuml.display()),
+    );
 
     let (renders, jobs) = crossbeam_channel::unbounded();
-    let render_thread = thread::spawn(move || render::run(plantuml, jobs));
+    let render_logger = connection.sender.clone();
+    let render_thread = thread::spawn(move || render::run(plantuml, jobs, render_logger));
 
     Server {
         documents: HashMap::new(),
         pending: HashMap::new(),
         renders,
+        logger: connection.sender.clone(),
     }
     .run(&connection)?;
 
@@ -60,6 +67,7 @@ struct Server {
     documents: HashMap<String, String>,
     pending: HashMap<String, Instant>,
     renders: Sender<render::Job>,
+    logger: Sender<Message>,
 }
 
 impl Server {
@@ -159,6 +167,7 @@ impl Server {
                 let params: DidOpenTextDocumentParams =
                     notification.extract(DidOpenTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
+                log(&self.logger, MessageType::LOG, format!("opened `{uri}`"));
                 self.pending.insert(uri.clone(), Instant::now());
                 self.documents.insert(uri, params.text_document.text);
             }
@@ -177,6 +186,7 @@ impl Server {
                 let params: DidCloseTextDocumentParams =
                     notification.extract(DidCloseTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
+                log(&self.logger, MessageType::LOG, format!("closed `{uri}`"));
                 self.documents.remove(&uri);
                 self.pending.remove(&uri);
             }
@@ -205,6 +215,13 @@ impl Server {
         }
         Ok(())
     }
+}
+
+fn log(logger: &Sender<Message>, typ: MessageType, message: String) {
+    let params = LogMessageParams { typ, message };
+    logger
+        .send(Notification::new(LogMessage::METHOD.to_string(), params).into())
+        .ok();
 }
 
 fn file_path(uri: &str) -> Option<PathBuf> {
