@@ -1,0 +1,52 @@
+name: Build plantuml-preview
+permissions: write-all
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset: plantuml-preview-macos-arm64.tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: plantuml-preview-linux-arm64.tar.gz
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: plantuml-preview-linux-x64.tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: plantuml-preview-windows-x64.zip
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust Toolchain
+        uses: "dtolnay/rust-toolchain@v1"
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Run cargo build
+        run: cargo build --release -p plantuml-preview --target=${{ matrix.target }}
+
+      - name: Create archive
+        if: runner.os != 'Windows'
+        run: |
+          mv target/${{ matrix.target }}/release/plantuml-preview plantuml-preview
+          tar -czvf ${{ matrix.asset }} plantuml-preview
+
+      - name: Create archive
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/plantuml-preview.exe -DestinationPath ${{ matrix.asset }}
+
+      - name: Add asset to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ matrix.asset }}

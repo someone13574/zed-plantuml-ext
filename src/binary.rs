@@ -1,18 +1,40 @@
-use std::{env, fs};
+use std::{env, fs, marker::PhantomData};
 
 use zed_extension_api as zed;
 
 pub trait Binary {
-    const DOWNLOAD_REPO: &'static str;
-    const DOWNLOAD_TAG: &'static str;
+    const NAME: &'static str;
     const DIR_PREFIX: &'static str;
+    const DOWNLOAD_REPO: &'static str = "someone13574/zed-plantuml-ext";
+    const DOWNLOAD_TAG: &'static str = "test2";
 
-    fn get_cached_binary(&self) -> Option<String>;
-    fn set_cached_binary(&mut self, cached_binary: Option<String>);
+    fn binary_name(os: zed::Os) -> String {
+        match os {
+            zed::Os::Mac | zed::Os::Linux => Self::NAME.to_string(),
+            zed::Os::Windows => format!("{}.exe", Self::NAME),
+        }
+    }
 
-    fn binary_name(os: zed::Os) -> &'static str;
-    fn asset_name(version: &str, os: zed::Os, arch: zed::Architecture) -> zed::Result<String>;
-    fn asset_type(os: zed::Os) -> zed::DownloadedFileType;
+    fn asset_name(_version: &str, os: zed::Os, arch: zed::Architecture) -> zed::Result<String> {
+        let platform = match (os, arch) {
+            (zed::Os::Mac, zed::Architecture::Aarch64) => "macos-arm64.tar.gz",
+            (zed::Os::Linux, zed::Architecture::Aarch64) => "linux-arm64.tar.gz",
+            (zed::Os::Linux, zed::Architecture::X8664) => "linux-x64.tar.gz",
+            (zed::Os::Windows, zed::Architecture::X8664) => "windows-x64.zip",
+            (os, arch) => {
+                return Err(format!("architecture {arch:?} not supported on os {os:?}"));
+            }
+        };
+
+        Ok(format!("{}-{platform}", Self::NAME))
+    }
+
+    fn asset_type(os: zed::Os) -> zed::DownloadedFileType {
+        match os {
+            zed::Os::Mac | zed::Os::Linux => zed::DownloadedFileType::GzipTar,
+            zed::Os::Windows => zed::DownloadedFileType::Zip,
+        }
+    }
 
     fn version_dir() -> String {
         format!("{}{}", Self::DIR_PREFIX, Self::DOWNLOAD_TAG)
@@ -78,25 +100,40 @@ pub trait Binary {
             .map_err(|err| format!("failed to get extension directory: {err}"))?;
         Ok(work_dir.join(binary_path).to_string_lossy().to_string())
     }
+}
 
-    fn get_binary(
+pub struct Cached<B> {
+    path: Option<String>,
+    binary: PhantomData<B>,
+}
+
+impl<B> Default for Cached<B> {
+    fn default() -> Self {
+        Self {
+            path: None,
+            binary: PhantomData,
+        }
+    }
+}
+
+impl<B: Binary> Cached<B> {
+    pub fn get(
         &mut self,
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> zed::Result<String> {
-        if let Some(path) = self.get_cached_binary() {
-            if fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
-                return Ok(path);
+        if let Some(path) = &self.path {
+            if fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+                return Ok(path.clone());
             }
-            self.set_cached_binary(None);
         }
 
         let (os, arch) = zed::current_platform();
-        let path = match worktree.which(Self::binary_name(os)) {
+        let path = match worktree.which(&B::binary_name(os)) {
             Some(path) => path,
-            None => Self::download_binary(language_server_id, os, arch)?,
+            None => B::download_binary(language_server_id, os, arch)?,
         };
-        self.set_cached_binary(Some(path.clone()));
+        self.path = Some(path.clone());
 
         Ok(path)
     }

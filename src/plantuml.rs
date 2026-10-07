@@ -2,30 +2,13 @@ use zed_extension_api as zed;
 
 use crate::binary::Binary;
 
-#[derive(Default)]
-pub struct Plantuml {
-    cached_binary: Option<String>,
-}
+pub struct Plantuml;
 
 impl Binary for Plantuml {
+    const NAME: &str = "plantuml";
+    const DIR_PREFIX: &str = "plantuml-native-";
     const DOWNLOAD_REPO: &str = "plantuml/plantuml";
     const DOWNLOAD_TAG: &str = "v1.2026.8";
-    const DIR_PREFIX: &str = "plantuml-native-";
-
-    fn get_cached_binary(&self) -> Option<String> {
-        self.cached_binary.clone()
-    }
-
-    fn set_cached_binary(&mut self, cached_binary: Option<String>) {
-        self.cached_binary = cached_binary;
-    }
-
-    fn binary_name(os: zed::Os) -> &'static str {
-        match os {
-            zed::Os::Mac | zed::Os::Linux => "plantuml",
-            zed::Os::Windows => "plantuml.exe",
-        }
-    }
 
     fn asset_name(version: &str, os: zed::Os, arch: zed::Architecture) -> zed::Result<String> {
         let platform = match (os, arch) {
