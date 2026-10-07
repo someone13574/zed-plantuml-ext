@@ -1,7 +1,9 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     env,
     error::Error,
+    fs,
     path::PathBuf,
     thread,
     time::{Duration, Instant},
@@ -11,10 +13,10 @@ use crossbeam_channel::{RecvTimeoutError, Sender};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentLink, DocumentLinkOptions, DocumentLinkParams, Position, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind,
+    DocumentLink, DocumentLinkOptions, DocumentLinkParams, LogMessageParams, MessageType, Position,
+    Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
     notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, LogMessage,
         Notification as LspNotification,
     },
     request::{DocumentLinkRequest, Request as LspRequest},
@@ -39,14 +41,21 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         ..Default::default()
     };
     connection.initialize(serde_json::to_value(capabilities)?)?;
+    log(
+        &connection.sender,
+        MessageType::INFO,
+        format!("started with plantuml `{}`", plantuml.display()),
+    );
 
     let (renders, jobs) = crossbeam_channel::unbounded();
-    let render_thread = thread::spawn(move || render::run(plantuml, jobs));
+    let render_logger = connection.sender.clone();
+    let render_thread = thread::spawn(move || render::run(plantuml, jobs, render_logger));
 
     Server {
         documents: HashMap::new(),
         pending: HashMap::new(),
         renders,
+        logger: connection.sender.clone(),
     }
     .run(&connection)?;
 
@@ -60,6 +69,7 @@ struct Server {
     documents: HashMap<String, String>,
     pending: HashMap<String, Instant>,
     renders: Sender<render::Job>,
+    logger: Sender<Message>,
 }
 
 impl Server {
@@ -122,8 +132,25 @@ impl Server {
 
     fn document_links(&self, params: DocumentLinkParams) -> Result<serde_json::Value, String> {
         let uri = params.text_document.uri.to_string();
-        let (Some(path), Some(text)) = (file_path(&uri), self.documents.get(&uri)) else {
+        let Some(path) = file_path(&uri) else {
             return Ok(serde_json::json!([]));
+        };
+        let text = match self.documents.get(&uri) {
+            Some(text) => Cow::Borrowed(text.as_str()),
+            None => match fs::read_to_string(&path) {
+                Ok(text) => {
+                    log(
+                        &self.logger,
+                        MessageType::LOG,
+                        format!(
+                            "links requested before open, read `{}` from disk",
+                            path.display()
+                        ),
+                    );
+                    Cow::Owned(text)
+                }
+                Err(_) => return Ok(serde_json::json!([])),
+            },
         };
 
         let links: Vec<DocumentLink> = text
@@ -159,6 +186,7 @@ impl Server {
                 let params: DidOpenTextDocumentParams =
                     notification.extract(DidOpenTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
+                log(&self.logger, MessageType::LOG, format!("opened `{uri}`"));
                 self.pending.insert(uri.clone(), Instant::now());
                 self.documents.insert(uri, params.text_document.text);
             }
@@ -177,6 +205,7 @@ impl Server {
                 let params: DidCloseTextDocumentParams =
                     notification.extract(DidCloseTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
+                log(&self.logger, MessageType::LOG, format!("closed `{uri}`"));
                 self.documents.remove(&uri);
                 self.pending.remove(&uri);
             }
@@ -205,6 +234,13 @@ impl Server {
         }
         Ok(())
     }
+}
+
+fn log(logger: &Sender<Message>, typ: MessageType, message: String) {
+    let params = LogMessageParams { typ, message };
+    logger
+        .send(Notification::new(LogMessage::METHOD.to_string(), params).into())
+        .ok();
 }
 
 fn file_path(uri: &str) -> Option<PathBuf> {
