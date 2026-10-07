@@ -6,7 +6,7 @@ pub trait Binary {
     const NAME: &'static str;
     const DIR_PREFIX: &'static str;
     const DOWNLOAD_REPO: &'static str = "someone13574/zed-plantuml-ext";
-    const DOWNLOAD_TAG: &'static str = "test2";
+    const DOWNLOAD_TAG: &'static str = "test3";
 
     fn binary_name(os: zed::Os) -> String {
         match os {
