@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    fs,
+    env, fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::{self, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -29,13 +30,29 @@ pub fn run(plantuml: PathBuf, jobs: Receiver<Job>) {
     }
 }
 
+pub fn svg_path(source: &Path, idx: usize) -> Option<PathBuf> {
+    let stem = source.file_stem()?.to_string_lossy();
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+
+    let name = match idx {
+        0 => format!("{stem}.svg"),
+        idx => format!("{stem}_{idx:03}.svg"),
+    };
+    Some(
+        env::temp_dir()
+            .join("plantuml-preview")
+            .join(format!("{:016x}", hasher.finish()))
+            .join(name),
+    )
+}
+
 fn render(plantuml: &Path, path: &Path, text: String) -> io::Result<()> {
     const DELIMITER: &str = "___PLANTUML_PREVIEW_END___";
 
-    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else {
-        return Err(io::Error::other("not a file path"));
-    };
-    let stem = stem.to_string_lossy();
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("not a file path"))?;
 
     let mut command = Command::new(plantuml);
     command
@@ -70,11 +87,8 @@ fn render(plantuml: &Path, path: &Path, text: String) -> io::Result<()> {
         .map(str::trim)
         .filter(|svg| !svg.is_empty());
     for (idx, svg) in svgs.enumerate() {
-        let name = match idx {
-            0 => format!("{stem}.svg"),
-            idx => format!("{stem}_{idx:03}.svg"),
-        };
-        write_if_changed(&dir.join(name), svg)?;
+        let svg_path = svg_path(path, idx).ok_or_else(|| io::Error::other("not a file path"))?;
+        write_if_changed(&svg_path, svg)?;
     }
 
     Ok(())
@@ -85,8 +99,8 @@ fn write_if_changed(path: &Path, contents: &str) -> io::Result<()> {
         return Ok(());
     }
 
-    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-    let temp = path.with_file_name(format!(".{file_name}.tmp"));
-    fs::write(&temp, contents)?;
-    fs::rename(&temp, path)
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(path, contents)
 }

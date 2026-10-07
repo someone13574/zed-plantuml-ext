@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     env,
     error::Error,
     path::PathBuf,
@@ -10,21 +10,17 @@ use std::{
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
-    CodeAction, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, Command,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    ExecuteCommandOptions, ExecuteCommandParams, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind,
+    DocumentLink, DocumentLinkOptions, DocumentLinkParams, Position, Range, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
         Notification as LspNotification,
     },
-    request::{CodeActionRequest, ExecuteCommand, Request as LspRequest},
+    request::{DocumentLinkRequest, Request as LspRequest},
 };
 
 mod render;
-
-const START_COMMAND: &str = "plantuml-preview.start";
-const STOP_COMMAND: &str = "plantuml-preview.stop";
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let plantuml = env::args()
@@ -36,10 +32,9 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-        execute_command_provider: Some(ExecuteCommandOptions {
-            commands: vec![START_COMMAND.to_string(), STOP_COMMAND.to_string()],
-            ..Default::default()
+        document_link_provider: Some(DocumentLinkOptions {
+            resolve_provider: Some(false),
+            work_done_progress_options: Default::default(),
         }),
         ..Default::default()
     };
@@ -50,7 +45,6 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     Server {
         documents: HashMap::new(),
-        previewing: HashSet::new(),
         pending: HashMap::new(),
         renders,
     }
@@ -64,7 +58,6 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
 struct Server {
     documents: HashMap<String, String>,
-    previewing: HashSet<String>,
     pending: HashMap<String, Instant>,
     renders: Sender<render::Job>,
 }
@@ -109,11 +102,8 @@ impl Server {
         let id = request.id;
         let params = request.params;
         let result = match request.method.as_str() {
-            CodeActionRequest::METHOD => {
-                parse_params(params).and_then(|params| self.code_actions(params))
-            }
-            ExecuteCommand::METHOD => {
-                parse_params(params).and_then(|params| self.execute_command(params))
+            DocumentLinkRequest::METHOD => {
+                parse_params(params).and_then(|params| self.document_links(params))
             }
             method => {
                 return Response::new_err(
@@ -130,51 +120,34 @@ impl Server {
         }
     }
 
-    fn code_actions(&self, params: CodeActionParams) -> Result<serde_json::Value, String> {
+    fn document_links(&self, params: DocumentLinkParams) -> Result<serde_json::Value, String> {
         let uri = params.text_document.uri.to_string();
-        if file_path(&uri).is_none() {
+        let (Some(path), Some(text)) = (file_path(&uri), self.documents.get(&uri)) else {
             return Ok(serde_json::json!([]));
-        }
-
-        let (title, command) = if self.previewing.contains(&uri) {
-            ("Stop live preview", STOP_COMMAND)
-        } else {
-            ("Start live preview", START_COMMAND)
         };
-        let action = CodeActionOrCommand::CodeAction(CodeAction {
-            title: title.to_string(),
-            command: Some(Command {
-                title: title.to_string(),
-                command: command.to_string(),
-                arguments: Some(vec![serde_json::Value::String(uri)]),
-            }),
-            ..Default::default()
-        });
-        serde_json::to_value(vec![action]).map_err(|err| err.to_string())
-    }
 
-    fn execute_command(
-        &mut self,
-        params: ExecuteCommandParams,
-    ) -> Result<serde_json::Value, String> {
-        let uri = params
-            .arguments
-            .first()
-            .and_then(|arg| arg.as_str())
-            .ok_or("expected a document uri")?;
-
-        match params.command.as_str() {
-            START_COMMAND => {
-                self.previewing.insert(uri.to_string());
-                self.pending.insert(uri.to_string(), Instant::now());
-            }
-            STOP_COMMAND => {
-                self.previewing.remove(uri);
-                self.pending.remove(uri);
-            }
-            command => return Err(format!("unknown command `{command}`")),
-        }
-        Ok(serde_json::Value::Null)
+        let links: Vec<DocumentLink> = text
+            .lines()
+            .enumerate()
+            .filter_map(|(line, content)| {
+                let word = content.split_whitespace().next()?;
+                content.starts_with("@start").then_some((line, word.len()))
+            })
+            .enumerate()
+            .filter_map(|(idx, (line, len))| {
+                let target = url::Url::from_file_path(render::svg_path(&path, idx)?).ok()?;
+                Some(DocumentLink {
+                    range: Range {
+                        start: Position::new(line as u32, 0),
+                        end: Position::new(line as u32, len as u32),
+                    },
+                    target: Some(target.as_str().parse().ok()?),
+                    tooltip: Some("Open preview".to_string()),
+                    data: None,
+                })
+            })
+            .collect();
+        serde_json::to_value(links).map_err(|err| err.to_string())
     }
 
     fn handle_notification(
@@ -186,9 +159,7 @@ impl Server {
                 let params: DidOpenTextDocumentParams =
                     notification.extract(DidOpenTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
-                if self.previewing.contains(&uri) {
-                    self.pending.insert(uri.clone(), Instant::now());
-                }
+                self.pending.insert(uri.clone(), Instant::now());
                 self.documents.insert(uri, params.text_document.text);
             }
             DidChangeTextDocument::METHOD => {
@@ -198,9 +169,7 @@ impl Server {
                     notification.extract(DidChangeTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
                 if let Some(change) = params.content_changes.into_iter().last() {
-                    if self.previewing.contains(&uri) {
-                        self.pending.insert(uri.clone(), Instant::now() + DEBOUNCE);
-                    }
+                    self.pending.insert(uri.clone(), Instant::now() + DEBOUNCE);
                     self.documents.insert(uri, change.text);
                 }
             }
