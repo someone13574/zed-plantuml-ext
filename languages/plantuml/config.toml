@@ -1,3 +1,4 @@
 name = "PlantUML"
+grammar = "plantuml"
 path_suffixes = ["puml", "plantuml", "pu", "iuml", "wsd"]
 line_comments = ["' "]

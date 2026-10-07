@@ -9,3 +9,7 @@ repository = "https://github.com/someone13574/zed-plantuml-ext"
 [language_servers.ptdewey-plantuml-lsp]
 name = "ptdewey/plantuml-lsp"
 languages = ["PlantUML"]
+
+[grammars.plantuml]
+repository = "https://github.com/derivasoftware/tree-sitter-plantuml"
+commit = "5aaef677e35fda6832222855237c0fcfb0ec0655"
