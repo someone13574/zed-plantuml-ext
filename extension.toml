@@ -1,0 +1,11 @@
+id = "plantuml-better"
+name = "PlantUML Better"
+version = "0.0.1"
+schema_version = 1
+authors = ["Owen Law <owenlaw222@gmail.com>"]
+description = "LSP & Live Preview for PlantUML diagrams"
+repository = "https://github.com/someone13574/zed-plantuml-ext"
+
+[language_servers.ptdewey-plantuml-lsp]
+name = "ptdewey/plantuml-lsp"
+languages = ["PlantUML"]
