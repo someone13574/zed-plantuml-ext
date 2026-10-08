@@ -217,7 +217,7 @@ impl Server {
                 self.documents.insert(uri, params.text_document.text);
             }
             DidChangeTextDocument::METHOD => {
-                const DEBOUNCE: Duration = Duration::from_millis(150);
+                const DEBOUNCE: Duration = Duration::from_millis(500);
 
                 let params: DidChangeTextDocumentParams =
                     notification.extract(DidChangeTextDocument::METHOD)?;
