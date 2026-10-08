@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     error::Error,
     fs,
@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     Server {
         documents: HashMap::new(),
+        previewing: HashSet::new(),
         pending: HashMap::new(),
         renders,
         logger: connection.sender.clone(),
@@ -65,6 +66,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
 struct Server {
     documents: HashMap<String, String>,
+    previewing: HashSet<String>,
     pending: HashMap<String, Instant>,
     renders: Sender<render::Job>,
     logger: Sender<Message>,
@@ -126,7 +128,7 @@ impl Server {
         }
     }
 
-    fn hover(&self, params: HoverParams) -> Result<serde_json::Value, String> {
+    fn hover(&mut self, params: HoverParams) -> Result<serde_json::Value, String> {
         let uri = params
             .text_document_position_params
             .text_document
@@ -178,6 +180,14 @@ impl Server {
             MessageType::LOG,
             format!("hover preview link for diagram {idx} of `{uri}`"),
         );
+        if self.previewing.insert(uri.clone()) {
+            log(
+                &self.logger,
+                MessageType::INFO,
+                format!("started previewing `{uri}`"),
+            );
+            self.pending.insert(uri, Instant::now());
+        }
         let hover = Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -201,7 +211,9 @@ impl Server {
                     notification.extract(DidOpenTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
                 log(&self.logger, MessageType::LOG, format!("opened `{uri}`"));
-                self.pending.insert(uri.clone(), Instant::now());
+                if self.previewing.contains(&uri) {
+                    self.pending.insert(uri.clone(), Instant::now());
+                }
                 self.documents.insert(uri, params.text_document.text);
             }
             DidChangeTextDocument::METHOD => {
@@ -211,7 +223,9 @@ impl Server {
                     notification.extract(DidChangeTextDocument::METHOD)?;
                 let uri = params.text_document.uri.to_string();
                 if let Some(change) = params.content_changes.into_iter().last() {
-                    self.pending.insert(uri.clone(), Instant::now() + DEBOUNCE);
+                    if self.previewing.contains(&uri) {
+                        self.pending.insert(uri.clone(), Instant::now() + DEBOUNCE);
+                    }
                     self.documents.insert(uri, change.text);
                 }
             }
@@ -222,6 +236,13 @@ impl Server {
                 log(&self.logger, MessageType::LOG, format!("closed `{uri}`"));
                 self.documents.remove(&uri);
                 self.pending.remove(&uri);
+                if self.previewing.remove(&uri) {
+                    log(
+                        &self.logger,
+                        MessageType::INFO,
+                        format!("stopped previewing `{uri}`"),
+                    );
+                }
             }
             _ => {}
         }
